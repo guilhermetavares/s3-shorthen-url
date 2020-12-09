@@ -1,46 +1,60 @@
-import os
-import json
-import logging
 import uuid
 import boto3
+import logging
+import tempfile
+import json
+
 from botocore.exceptions import ClientError
 
-s3_client = boto3.client('s3')
 
-bucket = os.getenv("SHORTENER_BUCKET","")
+logger = logging.getLogger(__name__)
 
-def upload_file(file_name, bucket, object_name, url):
 
-    try:            
-        s3_client.upload_file(
-            file_name, bucket, object_name,
-            ExtraArgs={'WebsiteRedirectLocation': url} 
+class ShorthenUrl:
+
+    def __init__(self, aws_access_key_id, aws_secret_access_key, aws_bucket, aws_shorthen_app):
+        self.client = boto3.client(
+            "s3",
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
         )
-        os.remove(file_name)
-    except ClientError as e:
-        logging.error(e)
-        return None
+        self.bucket = aws_bucket
+        self.aws_shorthen_app = aws_shorthen_app
 
-    return f"https://{bucket}/{file_name}"
+    def get_filename(self):
+        filename = uuid.uuid4().hex[:16]
 
-def shorten_url(url, app):
-
-    while True:
         try:
-            file_name = uuid.uuid4().hex[:10]
-            object_name = file_name
-            s3_client.head_object(Bucket=bucket, Key=file_name)
+            self.client.head_object(Bucket=self.bucket, Key=filename)
         except ClientError as e:
-            if e.response['Error']['Code'] == "404":
-                with open(file_name, "w") as f:
-                    content = {
-                        "file_name": file_name,
-                        "url": url,
-                        "app": app,
-                    }
-                    f.write(json.dumps(content))
-                    return upload_file(file_name, bucket, object_name, url)
-            else:
-                logging.error(e)
-                raise e
-            
+            if e.response["Error"]["Code"] == "404":
+                return filename
+
+        return self.get_filename()  # pragma: no cover
+
+    def shorten_url(self, url, filename=None):
+
+        filename = self.get_filename()
+
+        content = {
+            "file_name": filename,
+            "url": url,
+            "app": self.aws_shorthen_app,
+        }
+
+        logger.info("ShorthenUrl", extra=content)
+
+        temp_file = tempfile.TemporaryFile()
+        temp_file.write(json.dumps(content).encode())
+        temp_file.seek(0)
+
+        self.client.upload_fileobj(
+            temp_file,
+            self.bucket,
+            filename,
+            ExtraArgs={"WebsiteRedirectLocation": url},
+        )
+
+        temp_file.close()
+
+        return f"https://{self.bucket}/{filename}"
